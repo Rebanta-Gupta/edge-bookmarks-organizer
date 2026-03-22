@@ -11,14 +11,14 @@ use std::collections::HashMap;
 /// Predefined topic categories with associated keywords.
 /// Extend this list to improve categorization accuracy.
 const TOPIC_KEYWORDS: &[(&str, &[&str])] = &[
-    ("Technology", &["tech", "software", "programming", "code", "developer", "api", "github", "stack"]),
+    ("Technology", &["tech", "software", "programming", "code", "developer", "api", "github", "stack", "computer", "laptop", "hardware"]),
     ("News", &["news", "cnn", "bbc", "reuters", "times", "post", "journal"]),
     ("Social Media", &["twitter", "facebook", "instagram", "linkedin", "reddit", "tiktok"]),
     ("Shopping", &["amazon", "ebay", "shop", "store", "buy", "cart", "checkout"]),
-    ("Entertainment", &["youtube", "netflix", "spotify", "music", "movie", "video", "game"]),
-    ("Reference", &["wikipedia", "wiki", "docs", "documentation", "reference", "manual"]),
+    ("Entertainment", &["youtube", "netflix", "spotify", "music", "movie", "movies", "watch", "video", "videos", "film", "films", "cinema", "anime", "cartoon", "series", "episode", "stream", "streaming", "tv", "show", "shows", "game", "gaming"]),
+    ("Reference", &["wikipedia", "wiki", "docs", "documentation", "reference", "manual", "guide", "encyclopedia"]),
     ("Finance", &["bank", "finance", "stock", "invest", "crypto", "money", "trading"]),
-    ("Education", &["learn", "course", "tutorial", "education", "university", "school"]),
+    ("Education", &["learn", "course", "tutorial", "education", "university", "school", "class", "study", "ncert", "exam", "worksheet"]),
     ("Development", &["rust", "python", "javascript", "java", "golang", "cpp", "typescript"]),
     ("Cloud", &["aws", "azure", "gcp", "cloud", "kubernetes", "docker", "devops"]),
 ];
@@ -178,5 +178,12 @@ mod tests {
 
         let youtube = make_bookmark("YouTube", "[youtube.com](https://youtube.com)", "youtube.com");
         assert_eq!(extractor.extract_topic(&youtube), Some("Entertainment".to_string()));
+
+        let movies = make_bookmark(
+            "Watch movie online",
+            "https://some-site.example/watch/movies/action",
+            "some-site.example",
+        );
+        assert_eq!(extractor.extract_topic(&movies), Some("Entertainment".to_string()));
     }
 }
