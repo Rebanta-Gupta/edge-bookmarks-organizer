@@ -129,14 +129,29 @@ fn rebuild_by_domain_with_id_start(bookmarks: &[Bookmark], id_start: u64) -> Raw
 fn rebuild_by_topic_with_id_start(bookmarks: &[Bookmark], id_start: u64) -> RawBookmarkNode {
     let mut id_gen = IdGenerator::new(id_start);
 
-    // Group by topic label, with fallback for unassigned topics.
-    let mut topic_map: HashMap<String, Vec<&Bookmark>> = HashMap::new();
+    // Group by topic first, then by domain to create topic subfolders.
+    let mut topic_map: HashMap<String, HashMap<String, Vec<&Bookmark>>> = HashMap::new();
     for bookmark in bookmarks {
         let topic = bookmark
             .topic
-            .clone()
-            .unwrap_or_else(|| "Uncategorized".to_string());
-        topic_map.entry(topic).or_default().push(bookmark);
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .unwrap_or("Uncategorized")
+            .to_string();
+
+        let domain = if bookmark.domain.trim().is_empty() {
+            "Unknown Domain".to_string()
+        } else {
+            bookmark.domain.clone()
+        };
+
+        topic_map
+            .entry(topic)
+            .or_default()
+            .entry(domain)
+            .or_default()
+            .push(bookmark);
     }
 
     // Sort topics alphabetically for stable output.
@@ -146,13 +161,23 @@ fn rebuild_by_topic_with_id_start(bookmarks: &[Bookmark], id_start: u64) -> RawB
     let children: Vec<RawBookmarkNode> = topics
         .into_iter()
         .map(|topic| {
-            let topic_bookmarks = &topic_map[&topic];
-            let bookmark_nodes: Vec<RawBookmarkNode> = topic_bookmarks
-                .iter()
-                .map(|b| build_url_node(b, &id_gen.next()))
+            let mut domains: Vec<_> = topic_map[&topic].keys().cloned().collect();
+            domains.sort();
+
+            let domain_children: Vec<RawBookmarkNode> = domains
+                .into_iter()
+                .map(|domain| {
+                    let topic_domain_bookmarks = &topic_map[&topic][&domain];
+                    let bookmark_nodes: Vec<RawBookmarkNode> = topic_domain_bookmarks
+                        .iter()
+                        .map(|b| build_url_node(b, &id_gen.next()))
+                        .collect();
+
+                    build_folder_node(&domain, &id_gen.next(), bookmark_nodes)
+                })
                 .collect();
 
-            build_folder_node(&topic, &id_gen.next(), bookmark_nodes)
+            build_folder_node(&topic, &id_gen.next(), domain_children)
         })
         .collect();
 
@@ -335,6 +360,20 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    fn bookmark_with_topic(id: &str, name: &str, url: &str, domain: &str, topic: Option<&str>) -> Bookmark {
+        Bookmark {
+            id: id.to_string(),
+            name: name.to_string(),
+            url: url.to_string(),
+            normalized_url: url.to_string(),
+            domain: domain.to_string(),
+            folder_path: "Bookmarks Bar".to_string(),
+            date_added: None,
+            date_last_used: None,
+            topic: topic.map(|t| t.to_string()),
+        }
+    }
+
     fn sample_bookmarks_file() -> BookmarksFile {
         let bookmark_bar = RawBookmarkNode {
             id: "1".to_string(),
@@ -387,5 +426,32 @@ mod tests {
         assert_eq!(parsed.checksum, "abc123");
         assert_eq!(parsed.version, 1);
         assert!(!tmp.exists());
+    }
+
+    #[test]
+    fn test_rebuild_by_topic_creates_topic_domain_subfolders() {
+        let bookmarks = vec![
+            bookmark_with_topic("1", "Movie A", "https://watch.example.com/a", "watch.example.com", Some("Entertainment")),
+            bookmark_with_topic("2", "Movie B", "https://watch.example.com/b", "watch.example.com", Some("Entertainment")),
+            bookmark_with_topic("3", "Rust", "https://doc.rust-lang.org", "doc.rust-lang.org", Some("Technology")),
+            bookmark_with_topic("4", "No Topic", "https://example.com", "example.com", Some("   ")),
+        ];
+
+        let organized = rebuild_by_topic_with_id_start(&bookmarks, 100);
+        let topic_children = organized.children.expect("topic folders should exist");
+
+        let entertainment = topic_children
+            .iter()
+            .find(|n| n.name == "Entertainment")
+            .expect("Entertainment topic folder should exist");
+        let entertainment_children = entertainment.children.clone().expect("topic should contain domain folders");
+        assert!(entertainment_children.iter().any(|n| n.name == "watch.example.com"));
+
+        let uncategorized = topic_children
+            .iter()
+            .find(|n| n.name == "Uncategorized")
+            .expect("blank topics should map to Uncategorized");
+        let uncategorized_children = uncategorized.children.clone().expect("topic should contain domain folders");
+        assert!(uncategorized_children.iter().any(|n| n.name == "example.com"));
     }
 }
