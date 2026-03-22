@@ -77,7 +77,7 @@ pub struct BookmarkRoots {
 }
 
 /// Status of a bookmark after dead link checking.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum LinkStatus {
     /// Link is reachable (2xx or 3xx status)
     Alive,
@@ -86,13 +86,8 @@ pub enum LinkStatus {
     /// Connection failed (timeout, DNS error, etc.)
     Unreachable { reason: String },
     /// Not yet checked
+    #[default]
     Unknown,
-}
-
-impl Default for LinkStatus {
-    fn default() -> Self {
-        LinkStatus::Unknown
-    }
 }
 
 /// A bookmark with its link status after checking.

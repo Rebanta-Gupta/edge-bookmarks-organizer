@@ -4,7 +4,6 @@
 //! alive, dead (4xx/5xx), or unreachable (network errors).
 
 use crate::bookmark::{Bookmark, CheckedBookmark, LinkStatus};
-use crate::error::Result;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
 
@@ -88,18 +87,18 @@ pub async fn check_bookmarks(
     let total = bookmarks.len();
     let pb = if show_progress {
         let pb = ProgressBar::new(total as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
-                .unwrap()
-                .progress_chars("#>-"),
-        );
+        if let Ok(style) = ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+        {
+            pb.set_style(style.progress_chars("#>-"));
+        }
         Some(pb)
     } else {
         None
     };
 
     let config = config.clone();
+    let bounded_concurrency = config.concurrency.clamp(1, 100);
     
     let results: Vec<CheckedBookmark> = stream::iter(bookmarks)
         .map(|bookmark| {
@@ -109,7 +108,7 @@ pub async fn check_bookmarks(
                 CheckedBookmark { bookmark, status }
             }
         })
-        .buffer_unordered(config.concurrency)
+        .buffer_unordered(bounded_concurrency)
         .inspect(|_| {
             if let Some(ref pb) = pb {
                 pb.inc(1);

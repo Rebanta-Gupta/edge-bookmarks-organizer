@@ -10,9 +10,10 @@ use clap::{Parser, Subcommand};
 use colored::*;
 use edge_bookmarks_organizer::{
     backup, deadlinks, duplicates, embeddings, error::Result, organizer, parser, rebuilder,
+    BookmarkError,
     Bookmark, BookmarksFile,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(name = "edge-bookmarks")]
@@ -26,6 +27,18 @@ struct Cli {
 
     #[command(subcommand)]
     command: Commands,
+}
+
+fn parse_concurrency(value: &str) -> std::result::Result<usize, String> {
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|_| "Concurrency must be a positive integer".to_string())?;
+
+    if (1..=100).contains(&parsed) {
+        Ok(parsed)
+    } else {
+        Err("Concurrency must be between 1 and 100".to_string())
+    }
 }
 
 #[derive(Subcommand)]
@@ -69,7 +82,7 @@ enum Commands {
         timeout: u64,
 
         /// Number of concurrent requests
-        #[arg(short, long, default_value = "10")]
+        #[arg(short, long, default_value = "10", value_parser = parse_concurrency)]
         concurrency: usize,
 
         /// Only show dead/unreachable links
@@ -88,7 +101,7 @@ enum Commands {
         timeout: u64,
 
         /// Number of concurrent requests
-        #[arg(short, long, default_value = "10")]
+        #[arg(short, long, default_value = "10", value_parser = parse_concurrency)]
         concurrency: usize,
     },
 
@@ -131,6 +144,9 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+
+    /// Diagnose profile/bookmark/backup state before running apply commands
+    Doctor,
 }
 
 /// Application state holding loaded bookmarks.
@@ -197,6 +213,17 @@ impl App {
     }
 }
 
+fn ensure_non_empty_before_apply(bookmarks: &[Bookmark], operation: &str) -> Result<()> {
+    if bookmarks.is_empty() {
+        return Err(BookmarkError::Other(format!(
+            "Refusing to run '{}' because 0 bookmarks were loaded. Restore a backup first, then retry.",
+            operation
+        )));
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -246,6 +273,7 @@ fn main() -> Result<()> {
 
         Commands::Save { no_backup } => {
             let mut app = App::new(cli.bookmarks_file)?;
+            ensure_non_empty_before_apply(&app.bookmarks, "save")?;
             app.save_bookmarks(no_backup)?;
         }
 
@@ -264,6 +292,14 @@ fn main() -> Result<()> {
         Commands::AssignTopics { dry_run } => {
             let mut app = App::new(cli.bookmarks_file)?;
             cmd_assign_topics(&mut app, dry_run)?;
+        }
+
+        Commands::Doctor => {
+            let bookmarks_path = match cli.bookmarks_file {
+                Some(p) => p,
+                None => parser::get_default_bookmarks_path()?,
+            };
+            cmd_doctor(&bookmarks_path)?;
         }
     }
 
@@ -412,6 +448,10 @@ fn cmd_list_duplicates(app: &App, verbose: bool) -> Result<()> {
 }
 
 fn cmd_remove_duplicates(app: &mut App, apply: bool, keep_recent: bool) -> Result<()> {
+    if apply {
+        ensure_non_empty_before_apply(&app.bookmarks, "remove-duplicates --apply")?;
+    }
+
     let original_count = app.bookmarks.len();
     
     let deduped = if keep_recent {
@@ -465,7 +505,8 @@ fn cmd_check_dead(app: &App, timeout: u64, concurrency: usize, only_dead: bool) 
         ..Default::default()
     };
 
-    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let runtime = tokio::runtime::Runtime::new()
+        .map_err(|e| BookmarkError::Other(format!("Failed to initialize async runtime: {}", e)))?;
     let checked = runtime.block_on(deadlinks::check_bookmarks(
         app.bookmarks.clone(),
         &config,
@@ -506,6 +547,10 @@ fn cmd_check_dead(app: &App, timeout: u64, concurrency: usize, only_dead: bool) 
 }
 
 fn cmd_remove_dead(app: &mut App, apply: bool, timeout: u64, concurrency: usize) -> Result<()> {
+    if apply {
+        ensure_non_empty_before_apply(&app.bookmarks, "remove-dead --apply")?;
+    }
+
     println!("Checking all bookmarks for dead links...\n");
 
     let config = deadlinks::CheckConfig {
@@ -514,7 +559,8 @@ fn cmd_remove_dead(app: &mut App, apply: bool, timeout: u64, concurrency: usize)
         ..Default::default()
     };
 
-    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let runtime = tokio::runtime::Runtime::new()
+        .map_err(|e| BookmarkError::Other(format!("Failed to initialize async runtime: {}", e)))?;
     let checked = runtime.block_on(deadlinks::check_bookmarks(
         app.bookmarks.clone(),
         &config,
@@ -572,6 +618,8 @@ fn cmd_rebuild(app: &mut App, strategy: &str, apply: bool) -> Result<()> {
     );
 
     if apply {
+        ensure_non_empty_before_apply(&app.bookmarks, "rebuild --apply")?;
+
         let new_file = rebuilder::rebuild_bookmarks_file(
             &app.bookmarks_file,
             &app.bookmarks,
@@ -594,7 +642,7 @@ fn cmd_rebuild(app: &mut App, strategy: &str, apply: bool) -> Result<()> {
 }
 
 fn cmd_backup(
-    bookmarks_path: &PathBuf,
+    bookmarks_path: &Path,
     list: bool,
     restore: Option<PathBuf>,
     prune: Option<usize>,
@@ -606,10 +654,14 @@ fn cmd_backup(
         } else {
             println!("{}", "Available backups:".cyan().bold());
             for (i, path) in backups.iter().rev().enumerate() {
+                let display_name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.display().to_string());
                 println!(
                     "  {}. {}",
                     (i + 1),
-                    path.file_name().unwrap().to_string_lossy().green()
+                    display_name.green()
                 );
             }
         }
@@ -677,6 +729,82 @@ fn cmd_assign_topics(app: &mut App, dry_run: bool) -> Result<()> {
     } else {
         println!("\n{}", "Dry run - no changes made".yellow().bold());
     }
+
+    Ok(())
+}
+
+fn cmd_doctor(bookmarks_path: &Path) -> Result<()> {
+    println!("{}", "═".repeat(60).cyan());
+    println!("{}", "  BOOKMARK DOCTOR".cyan().bold());
+    println!("{}", "═".repeat(60).cyan());
+
+    println!("\n{} {}", "Target file:".yellow().bold(), bookmarks_path.display());
+
+    if !bookmarks_path.exists() {
+        return Err(BookmarkError::Other(format!(
+            "Bookmarks file does not exist: {}",
+            bookmarks_path.display()
+        )));
+    }
+
+    let size = std::fs::metadata(bookmarks_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    println!("  File size: {} bytes", size.to_string().cyan());
+
+    let bookmarks_file = parser::load_bookmarks_file(bookmarks_path)?;
+    let bookmarks = parser::parse_bookmarks(&bookmarks_file);
+    println!("  Parsed bookmarks: {}", bookmarks.len().to_string().cyan());
+
+    if bookmarks.is_empty() {
+        println!(
+            "  {}",
+            "Warning: 0 bookmarks parsed. Apply commands will be blocked to avoid data loss.".red()
+        );
+    }
+
+    let backups = backup::list_backups(bookmarks_path)?;
+    println!("\n{}", "Backups:".yellow().bold());
+    println!("  Count: {}", backups.len().to_string().cyan());
+    if let Some(last) = backups.last() {
+        println!("  Latest: {}", last.display().to_string().green());
+    }
+
+    if let Some(profile_dir) = bookmarks_path.parent()
+        && let Some(user_data_dir) = profile_dir.parent()
+    {
+        let local_state_path = user_data_dir.join("Local State");
+        if local_state_path.exists()
+            && let Ok(content) = std::fs::read_to_string(&local_state_path)
+            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&content)
+        {
+            let last_used = json
+                .get("profile")
+                .and_then(|p| p.get("last_used"))
+                .and_then(|v| v.as_str());
+
+            println!("\n{}", "Profile state:".yellow().bold());
+            if let Some(last_used) = last_used {
+                let current_profile = profile_dir
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown");
+                println!("  Edge last used profile: {}", last_used.cyan());
+                println!("  Current target profile: {}", current_profile.cyan());
+                if last_used != current_profile {
+                    println!(
+                        "  {}",
+                        "Warning: Target profile differs from Edge last-used profile. UI may show a different favorites set.".red()
+                    );
+                }
+            }
+        }
+    }
+
+    println!("\n{}", "Recommended next step:".yellow().bold());
+    println!("  1) Close Edge before apply commands");
+    println!("  2) Ensure parsed bookmarks > 0");
+    println!("  3) Run cleanup with --bookmarks-file pointing to this exact path");
 
     Ok(())
 }

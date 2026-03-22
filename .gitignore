@@ -1,0 +1,20 @@
+# Rust build artifacts
+target/
+
+# If this is a library crate, you may want to ignore Cargo.lock.
+# For binary applications, Cargo.lock is usually committed.
+# Cargo.lock
+
+# Local Python virtual environments
+.venv/
+venv/
+
+# Environment and local config
+.env
+.env.*
+
+# OS / editor artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

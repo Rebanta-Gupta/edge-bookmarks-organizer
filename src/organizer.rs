@@ -80,10 +80,13 @@ fn extract_root_domain(domain: &str) -> String {
     if parts.len() >= 3 {
         let second_last = parts[parts.len() - 2];
         if common_second_level.contains(&second_last) && parts[parts.len() - 1].len() == 2 {
-            // This is likely a country-code TLD with second level
-            if parts.len() >= 4 {
-                return parts[parts.len() - 3..].join(".");
-            }
+            // This is likely a country-code TLD with second level.
+            // For domains like example.co.uk (len == 3), the full domain is already the root.
+            return if parts.len() >= 4 {
+                parts[parts.len() - 3..].join(".")
+            } else {
+                domain.to_string()
+            };
         }
     }
 

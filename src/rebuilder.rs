@@ -216,12 +216,112 @@ pub fn rebuild_bookmarks_file(
 /// Write bookmarks to a JSON file.
 pub fn write_bookmarks_file(bookmarks: &BookmarksFile, path: &std::path::Path) -> Result<()> {
     use crate::error::BookmarkError;
+    use std::io::Write;
     
     let json = serde_json::to_string_pretty(bookmarks)?;
-    std::fs::write(path, json).map_err(|e| BookmarkError::FileWrite {
+
+    let parent = path.parent().ok_or_else(|| {
+        BookmarkError::Other(format!(
+            "Cannot determine output directory for {}",
+            path.display()
+        ))
+    })?;
+
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| BookmarkError::Other("Invalid output file name".to_string()))?;
+
+    let tmp_name = format!("{}.tmp", file_name);
+    let tmp_path = parent.join(tmp_name);
+
+    {
+        let mut tmp_file = std::fs::File::create(&tmp_path).map_err(|e| BookmarkError::FileWrite {
+            path: tmp_path.clone(),
+            source: e,
+        })?;
+        tmp_file.write_all(json.as_bytes()).map_err(|e| BookmarkError::FileWrite {
+            path: tmp_path.clone(),
+            source: e,
+        })?;
+        tmp_file.sync_all().map_err(|e| BookmarkError::FileWrite {
+            path: tmp_path.clone(),
+            source: e,
+        })?;
+    }
+
+    // Best-effort replacement across platforms: remove existing target before rename.
+    if path.exists() {
+        std::fs::remove_file(path).map_err(|e| BookmarkError::FileWrite {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
+    }
+
+    std::fs::rename(&tmp_path, path).map_err(|e| BookmarkError::FileWrite {
         path: path.to_path_buf(),
         source: e,
     })?;
     
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn sample_bookmarks_file() -> BookmarksFile {
+        let bookmark_bar = RawBookmarkNode {
+            id: "1".to_string(),
+            name: "Bookmarks Bar".to_string(),
+            node_type: "folder".to_string(),
+            url: None,
+            children: Some(Vec::new()),
+            date_added: None,
+            date_last_used: None,
+            extra: HashMap::new(),
+        };
+
+        let other = RawBookmarkNode {
+            id: "2".to_string(),
+            name: "Other bookmarks".to_string(),
+            node_type: "folder".to_string(),
+            url: None,
+            children: Some(Vec::new()),
+            date_added: None,
+            date_last_used: None,
+            extra: HashMap::new(),
+        };
+
+        BookmarksFile {
+            checksum: "abc123".to_string(),
+            roots: BookmarkRoots {
+                bookmark_bar,
+                other,
+                synced: None,
+                extra: HashMap::new(),
+            },
+            version: 1,
+            extra: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn test_write_bookmarks_file_replaces_content_and_cleans_tmp() {
+        let dir = tempdir().unwrap();
+        let output = dir.path().join("Bookmarks");
+        let tmp = dir.path().join("Bookmarks.tmp");
+
+        std::fs::write(&output, "old-content").unwrap();
+
+        let file = sample_bookmarks_file();
+        write_bookmarks_file(&file, &output).unwrap();
+
+        let written = std::fs::read_to_string(&output).unwrap();
+        let parsed: BookmarksFile = serde_json::from_str(&written).unwrap();
+        assert_eq!(parsed.checksum, "abc123");
+        assert_eq!(parsed.version, 1);
+        assert!(!tmp.exists());
+    }
 }
