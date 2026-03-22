@@ -341,24 +341,45 @@ fn cmd_import(app: &App) -> Result<()> {
         );
     }
 
-    // Show folder distribution
+    // Show folder distribution with one level of subfolders.
     let mut folder_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut subfolder_counts: std::collections::HashMap<String, std::collections::HashMap<String, usize>> =
+        std::collections::HashMap::new();
+
     for bookmark in &app.bookmarks {
-        let top_folder = bookmark
-            .folder_path
-            .split('/')
+        let mut parts = bookmark.folder_path.split('/').map(str::trim);
+        let top_folder = parts
             .next()
+            .filter(|s| !s.is_empty())
             .unwrap_or("(root)")
             .to_string();
-        *folder_counts.entry(top_folder).or_default() += 1;
+
+        *folder_counts.entry(top_folder.clone()).or_default() += 1;
+
+        if let Some(subfolder) = parts.next().filter(|s| !s.is_empty()) {
+            *subfolder_counts
+                .entry(top_folder)
+                .or_default()
+                .entry(subfolder.to_string())
+                .or_default() += 1;
+        }
     }
 
     let mut folder_stats: Vec<_> = folder_counts.into_iter().collect();
-    folder_stats.sort_by(|a, b| b.1.cmp(&a.1));
+    folder_stats.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
     println!("\n{}", "Top-level folders:".yellow().bold());
     for (folder, count) in folder_stats.iter().take(10) {
         println!("  {} ({})", folder.green(), count.to_string().cyan());
+
+        if let Some(subs) = subfolder_counts.get(folder) {
+            let mut sub_stats: Vec<_> = subs.iter().collect();
+            sub_stats.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+
+            for (subfolder, subcount) in sub_stats.iter().take(10) {
+                println!("    - {} ({})", subfolder.dimmed(), subcount.to_string().cyan());
+            }
+        }
     }
 
     Ok(())
