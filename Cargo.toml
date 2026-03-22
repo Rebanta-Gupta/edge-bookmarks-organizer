@@ -1,0 +1,48 @@
+[package]
+name = "edge-bookmarks-organizer"
+version = "0.1.0"
+edition = "2026"
+authors = ["Rebanta Gupta <guptarebanta@gmail.com>"]
+description = "A CLI tool to organize Microsoft Edge bookmarks"
+license = "MIT"
+readme = "README.md"
+
+[dependencies]
+# CLI parsing
+clap = { version = "4.4", features = ["derive"] }
+
+# JSON handling
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# URL parsing and normalization
+url = "2.5"
+
+# HTTP client for dead link checking
+reqwest = { version = "0.11", features = ["blocking"] }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Async runtime for concurrent link checking
+tokio = { version = "1.35", features = ["full"] }
+
+# Date/time for backups
+chrono = "0.4"
+
+# Directory paths
+dirs = "5.0"
+
+# Progress indication
+indicatif = "0.17"
+
+# Colored output
+colored = "2.1"
+
+# For topic grouping stub (lightweight similarity)
+rust-stemmers = "1.2"
+
+[[bin]]
+name = "edge-bookmarks"
+path = "src/main.rs"
