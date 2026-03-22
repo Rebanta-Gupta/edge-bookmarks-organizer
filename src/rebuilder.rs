@@ -20,6 +20,28 @@ pub enum OrganizeStrategy {
     ByTopic,
 }
 
+fn update_max_id_from_node(node: &RawBookmarkNode, current_max: &mut u64) {
+    if let Ok(id) = node.id.parse::<u64>() {
+        *current_max = (*current_max).max(id);
+    }
+
+    if let Some(children) = &node.children {
+        for child in children {
+            update_max_id_from_node(child, current_max);
+        }
+    }
+}
+
+fn next_safe_id_start(original: &BookmarksFile) -> u64 {
+    let mut max_id = 0_u64;
+    update_max_id_from_node(&original.roots.bookmark_bar, &mut max_id);
+    update_max_id_from_node(&original.roots.other, &mut max_id);
+    if let Some(synced) = &original.roots.synced {
+        update_max_id_from_node(synced, &mut max_id);
+    }
+    max_id.saturating_add(1)
+}
+
 /// Build a raw bookmark node for a single URL bookmark.
 fn build_url_node(bookmark: &Bookmark, id: &str) -> RawBookmarkNode {
     RawBookmarkNode {
@@ -67,7 +89,11 @@ impl IdGenerator {
 
 /// Rebuild bookmarks organized by domain.
 pub fn rebuild_by_domain(bookmarks: &[Bookmark]) -> RawBookmarkNode {
-    let mut id_gen = IdGenerator::new(1);
+    rebuild_by_domain_with_id_start(bookmarks, 1)
+}
+
+fn rebuild_by_domain_with_id_start(bookmarks: &[Bookmark], id_start: u64) -> RawBookmarkNode {
+    let mut id_gen = IdGenerator::new(id_start);
     
     // Group by domain
     let mut domain_map: HashMap<String, Vec<&Bookmark>> = HashMap::new();
@@ -99,9 +125,47 @@ pub fn rebuild_by_domain(bookmarks: &[Bookmark]) -> RawBookmarkNode {
     build_folder_node("Organized Bookmarks", &id_gen.next(), children)
 }
 
+/// Rebuild bookmarks organized by topic.
+fn rebuild_by_topic_with_id_start(bookmarks: &[Bookmark], id_start: u64) -> RawBookmarkNode {
+    let mut id_gen = IdGenerator::new(id_start);
+
+    // Group by topic label, with fallback for unassigned topics.
+    let mut topic_map: HashMap<String, Vec<&Bookmark>> = HashMap::new();
+    for bookmark in bookmarks {
+        let topic = bookmark
+            .topic
+            .clone()
+            .unwrap_or_else(|| "Uncategorized".to_string());
+        topic_map.entry(topic).or_default().push(bookmark);
+    }
+
+    // Sort topics alphabetically for stable output.
+    let mut topics: Vec<_> = topic_map.keys().cloned().collect();
+    topics.sort();
+
+    let children: Vec<RawBookmarkNode> = topics
+        .into_iter()
+        .map(|topic| {
+            let topic_bookmarks = &topic_map[&topic];
+            let bookmark_nodes: Vec<RawBookmarkNode> = topic_bookmarks
+                .iter()
+                .map(|b| build_url_node(b, &id_gen.next()))
+                .collect();
+
+            build_folder_node(&topic, &id_gen.next(), bookmark_nodes)
+        })
+        .collect();
+
+    build_folder_node("Organized Bookmarks", &id_gen.next(), children)
+}
+
 /// Rebuild bookmarks preserving original folder structure.
 pub fn rebuild_preserve_structure(bookmarks: &[Bookmark]) -> RawBookmarkNode {
-    let mut id_gen = IdGenerator::new(1);
+    rebuild_preserve_structure_with_id_start(bookmarks, 1)
+}
+
+fn rebuild_preserve_structure_with_id_start(bookmarks: &[Bookmark], id_start: u64) -> RawBookmarkNode {
+    let mut id_gen = IdGenerator::new(id_start);
     
     // Group by folder path
     let mut folder_map: HashMap<String, Vec<&Bookmark>> = HashMap::new();
@@ -179,34 +243,34 @@ pub fn rebuild_bookmarks_file(
     bookmarks: &[Bookmark],
     strategy: OrganizeStrategy,
 ) -> BookmarksFile {
+    let id_start = next_safe_id_start(original);
+
     let organized = match strategy {
         OrganizeStrategy::ByDomain | OrganizeStrategy::ByRootDomain => {
-            rebuild_by_domain(bookmarks)
+            rebuild_by_domain_with_id_start(bookmarks, id_start)
         }
-        OrganizeStrategy::PreserveOriginal | OrganizeStrategy::ByTopic => {
-            rebuild_preserve_structure(bookmarks)
+        OrganizeStrategy::ByTopic => {
+            rebuild_by_topic_with_id_start(bookmarks, id_start)
+        }
+        OrganizeStrategy::PreserveOriginal => {
+            rebuild_preserve_structure_with_id_start(bookmarks, id_start)
         }
     };
 
-    // Create empty "other" folder
-    let other = RawBookmarkNode {
-        id: "2".to_string(),
-        name: "Other bookmarks".to_string(),
-        node_type: "folder".to_string(),
-        url: None,
-        children: Some(Vec::new()),
-        date_added: None,
-        date_last_used: None,
-        extra: HashMap::new(),
-    };
+    // Preserve original root metadata to maximize compatibility with Edge.
+    let mut bookmark_bar = original.roots.bookmark_bar.clone();
+    bookmark_bar.children = organized.children;
+
+    let mut other = original.roots.other.clone();
+    other.children = Some(Vec::new());
 
     BookmarksFile {
         checksum: original.checksum.clone(), // Edge will recalculate this
         roots: BookmarkRoots {
-            bookmark_bar: organized,
+            bookmark_bar,
             other,
-            synced: None,
-            extra: HashMap::new(),
+            synced: original.roots.synced.clone(),
+            extra: original.roots.extra.clone(),
         },
         version: original.version,
         extra: original.extra.clone(),

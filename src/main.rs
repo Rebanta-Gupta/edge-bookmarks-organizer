@@ -617,6 +617,12 @@ fn cmd_rebuild(app: &mut App, strategy: &str, apply: bool) -> Result<()> {
         strategy.yellow().bold()
     );
 
+    // Topic rebuild requires topic assignments on bookmarks.
+    if matches!(organize_strategy, rebuilder::OrganizeStrategy::ByTopic) {
+        let extractor = embeddings::TopicExtractor::new();
+        extractor.assign_topics(&mut app.bookmarks);
+    }
+
     if apply {
         ensure_non_empty_before_apply(&app.bookmarks, "rebuild --apply")?;
 
